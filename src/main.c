@@ -197,9 +197,49 @@ bool vulkan_renderer_create_debug_messenger(struct vulkan_renderer *renderer) {
              NULL, &renderer->debug_messenger) == VK_SUCCESS;
 }
 
+struct queue_family_indices {
+  uint32_t graphics_family;
+  bool has_graphics_family;
+};
+
+bool queue_family_indices_is_complete(
+    const struct queue_family_indices *indices) {
+  return indices->has_graphics_family;
+}
+
+#define MAX_QUEUE_FAMILY_COUNT 64
+struct queue_family_indices find_queue_families(VkPhysicalDevice device) {
+  struct queue_family_indices indices = {0};
+
+  uint32_t queue_family_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+
+  assert(queue_family_count < MAX_QUEUE_FAMILY_COUNT);
+  VkQueueFamilyProperties queue_families[MAX_QUEUE_FAMILY_COUNT];
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
+                                           queue_families);
+
+  for (uint32_t queue_family_index = 0; queue_family_index < queue_family_count;
+       queue_family_index++) {
+    VkQueueFamilyProperties *queue_family = &queue_families[queue_family_index];
+    if (queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+      indices.graphics_family = queue_family_index;
+      indices.has_graphics_family = true;
+    }
+
+    if (queue_family_indices_is_complete(&indices)) {
+      break;
+    }
+  }
+
+  return indices;
+}
+
 bool is_device_suitable(VkPhysicalDevice device) {
-  (void)device;
-  return true;
+  struct queue_family_indices queue_family_indices =
+      find_queue_families(device);
+
+  return queue_family_indices_is_complete(&queue_family_indices);
 }
 
 bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
@@ -216,8 +256,8 @@ bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
   vkEnumeratePhysicalDevices(renderer->instance, &device_count, devices);
 
   for (uint32_t device_index = 0; device_index < device_count; device_index++) {
-    if (is_device_suitable(devices[device_count])) {
-      physical_device = devices[device_count];
+    if (is_device_suitable(devices[device_index])) {
+      physical_device = devices[device_index];
       break;
     }
   }
