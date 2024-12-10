@@ -24,6 +24,7 @@ struct vulkan_renderer {
 
 #define MAX_EXTENSION_COUNT 256
 #define MAX_ADDITIONAL_EXTENSION_COUNT 100
+#define MAX_DEVICE_COUNT 48
 
 VKAPI_ATTR VkBool32 VKAPI_CALL
 vulkan_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
@@ -196,6 +197,41 @@ bool vulkan_renderer_create_debug_messenger(struct vulkan_renderer *renderer) {
              NULL, &renderer->debug_messenger) == VK_SUCCESS;
 }
 
+bool is_device_suitable(VkPhysicalDevice device) {
+  (void)device;
+  return true;
+}
+
+bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
+  VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+  uint32_t device_count = 0;
+  vkEnumeratePhysicalDevices(renderer->instance, &device_count, NULL);
+  if (device_count == 0) {
+    LOG("No GPU with Vulkan support found");
+    goto err;
+  }
+  assert(device_count < MAX_DEVICE_COUNT);
+
+  VkPhysicalDevice devices[MAX_DEVICE_COUNT];
+  vkEnumeratePhysicalDevices(renderer->instance, &device_count, devices);
+
+  for (uint32_t device_index = 0; device_index < device_count; device_index++) {
+    if (is_device_suitable(devices[device_count])) {
+      physical_device = devices[device_count];
+      break;
+    }
+  }
+
+  if (physical_device == VK_NULL_HANDLE) {
+    LOG("Failed to find a suitable GPU");
+    goto err;
+  }
+
+  return true;
+err:
+  return false;
+}
+
 bool vulkan_renderer_init(struct vulkan_renderer *renderer) {
   assert(renderer);
 #ifdef NDEBUG
@@ -214,8 +250,19 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer) {
     }
   }
 
+  if (!vulkan_renderer_pick_physical_device(renderer)) {
+    LOG("Couldn't pick the appropriate physical device.");
+    goto destroy_instance;
+  }
+
   return true;
 
+destroy_instance:
+  if (renderer->enable_validation_layers) {
+    vkDestroyDebugUtilsMessengerEXT(renderer->instance,
+                                    renderer->debug_messenger, NULL);
+  }
+  vulkan_renderer_destroy_instance(renderer);
 err:
   return false;
 }
