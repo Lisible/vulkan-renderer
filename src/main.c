@@ -18,7 +18,12 @@
 
 struct vulkan_renderer {
   VkInstance instance;
+  VkPhysicalDevice physical_device;
+  VkDevice device;
+  VkQueue graphics_queue;
   VkDebugUtilsMessengerEXT debug_messenger;
+  VkSurfaceKHR surface;
+  VkQueue present_queue;
   bool enable_validation_layers;
 };
 
@@ -199,16 +204,19 @@ bool vulkan_renderer_create_debug_messenger(struct vulkan_renderer *renderer) {
 
 struct queue_family_indices {
   uint32_t graphics_family;
+  uint32_t present_family;
   bool has_graphics_family;
+  bool has_present_family;
 };
 
 bool queue_family_indices_is_complete(
     const struct queue_family_indices *indices) {
-  return indices->has_graphics_family;
+  return indices->has_graphics_family && indices->has_present_family;
 }
 
 #define MAX_QUEUE_FAMILY_COUNT 64
-struct queue_family_indices find_queue_families(VkPhysicalDevice device) {
+struct queue_family_indices find_queue_families(VkPhysicalDevice device,
+                                                VkSurfaceKHR surface) {
   struct queue_family_indices indices = {0};
 
   uint32_t queue_family_count = 0;
@@ -222,9 +230,19 @@ struct queue_family_indices find_queue_families(VkPhysicalDevice device) {
   for (uint32_t queue_family_index = 0; queue_family_index < queue_family_count;
        queue_family_index++) {
     VkQueueFamilyProperties *queue_family = &queue_families[queue_family_index];
+
+    VkBool32 present_support;
+    vkGetPhysicalDeviceSurfaceSupportKHR(device, queue_family_index, surface,
+                                         &present_support);
+
     if (queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
       indices.graphics_family = queue_family_index;
       indices.has_graphics_family = true;
+    }
+
+    if (present_support) {
+      indices.present_family = queue_family_index;
+      indices.has_present_family = true;
     }
 
     if (queue_family_indices_is_complete(&indices)) {
@@ -235,9 +253,9 @@ struct queue_family_indices find_queue_families(VkPhysicalDevice device) {
   return indices;
 }
 
-bool is_device_suitable(VkPhysicalDevice device) {
+bool is_device_suitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
   struct queue_family_indices queue_family_indices =
-      find_queue_families(device);
+      find_queue_families(device, surface);
 
   return queue_family_indices_is_complete(&queue_family_indices);
 }
@@ -256,7 +274,7 @@ bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
   vkEnumeratePhysicalDevices(renderer->instance, &device_count, devices);
 
   for (uint32_t device_index = 0; device_index < device_count; device_index++) {
-    if (is_device_suitable(devices[device_index])) {
+    if (is_device_suitable(devices[device_index], renderer->surface)) {
       physical_device = devices[device_index];
       break;
     }
@@ -267,13 +285,86 @@ bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
     goto err;
   }
 
+  renderer->physical_device = physical_device;
+
   return true;
 err:
   return false;
 }
 
-bool vulkan_renderer_init(struct vulkan_renderer *renderer) {
+bool is_in_array(uint32_t *array, int length, uint32_t value) {
+  for (int i = 0; i < length; i++) {
+    if (array[i] == value) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool vulkan_renderer_create_logical_device(struct vulkan_renderer *renderer) {
+  struct queue_family_indices indices =
+      find_queue_families(renderer->physical_device, renderer->surface);
+
+  VkDeviceQueueCreateInfo queue_create_infos[MAX_QUEUE_FAMILY_COUNT] = {0};
+  int queue_create_info_count = 0;
+
+  uint32_t unique_queue_families[MAX_QUEUE_FAMILY_COUNT] = {0};
+  int unique_queue_family_count = 0;
+
+  if (!is_in_array(unique_queue_families, unique_queue_family_count,
+                   indices.graphics_family)) {
+    unique_queue_families[unique_queue_family_count++] =
+        indices.graphics_family;
+  }
+  if (!is_in_array(unique_queue_families, unique_queue_family_count,
+                   indices.present_family)) {
+    unique_queue_families[unique_queue_family_count++] = indices.present_family;
+  }
+
+  float queue_priority = 1.0f;
+  for (int unique_queue_family_index = 0;
+       unique_queue_family_index < unique_queue_family_count;
+       unique_queue_family_index++) {
+    queue_create_infos[queue_create_info_count++] = (VkDeviceQueueCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = unique_queue_families[unique_queue_family_index],
+        .queueCount = 1,
+        .pQueuePriorities = &queue_priority};
+  }
+
+  VkPhysicalDeviceFeatures device_features = {0};
+
+  if (vkCreateDevice(renderer->physical_device,
+                     &(const VkDeviceCreateInfo){
+                         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                         .pQueueCreateInfos = queue_create_infos,
+                         .queueCreateInfoCount = queue_create_info_count,
+                         .pEnabledFeatures = &device_features,
+                         .enabledExtensionCount = 0,
+                         // TODO maybe add the validation layers
+                         // Not required according to vulkan-tutorial, but might
+                         // be good for compatibility
+                     },
+                     NULL, &renderer->device) != VK_SUCCESS) {
+    LOG("Couldn't create logical vulkan device");
+    return false;
+  }
+
+  vkGetDeviceQueue(renderer->device, indices.graphics_family, 0,
+                   &renderer->graphics_queue);
+  vkGetDeviceQueue(renderer->device, indices.present_family, 0,
+                   &renderer->present_queue);
+  LOG("graphics_queue: %p", (void *)renderer->graphics_queue);
+  LOG("present_queue: %p", (void *)renderer->present_queue);
+
+  return true;
+}
+
+bool vulkan_renderer_init(struct vulkan_renderer *renderer,
+                          SDL_Window *window) {
   assert(renderer);
+  assert(window);
 #ifdef NDEBUG
   renderer->enable_validation_layers = false;
 #else
@@ -290,13 +381,26 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer) {
     }
   }
 
+  if (!SDL_Vulkan_CreateSurface(window, renderer->instance, NULL,
+                                &renderer->surface)) {
+    LOG("Couldn't create Vulkan rendering surface: %s", SDL_GetError());
+    goto destroy_instance;
+  }
+
   if (!vulkan_renderer_pick_physical_device(renderer)) {
     LOG("Couldn't pick the appropriate physical device.");
-    goto destroy_instance;
+    goto destroy_surface;
+  }
+
+  if (!vulkan_renderer_create_logical_device(renderer)) {
+    LOG("Couldn't create the logical device");
+    goto destroy_surface;
   }
 
   return true;
 
+destroy_surface:
+  vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
 destroy_instance:
   if (renderer->enable_validation_layers) {
     vkDestroyDebugUtilsMessengerEXT(renderer->instance,
@@ -308,6 +412,8 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  vkDestroyDevice(renderer->device, NULL);
+  vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
   if (renderer->enable_validation_layers) {
     vkDestroyDebugUtilsMessengerEXT(renderer->instance,
                                     renderer->debug_messenger, NULL);
@@ -329,7 +435,7 @@ int main(void) {
   }
 
   struct vulkan_renderer renderer;
-  if (!vulkan_renderer_init(&renderer)) {
+  if (!vulkan_renderer_init(&renderer, window)) {
     LOG("Couldn't init vulkan renderer");
     goto destroy_window;
   }
