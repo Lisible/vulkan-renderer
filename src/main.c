@@ -314,11 +314,13 @@ bool vulkan_renderer_create_logical_device(struct vulkan_renderer *renderer) {
 
   if (!is_in_array(unique_queue_families, unique_queue_family_count,
                    indices.graphics_family)) {
+    assert(unique_queue_family_count < MAX_QUEUE_FAMILY_COUNT);
     unique_queue_families[unique_queue_family_count++] =
         indices.graphics_family;
   }
   if (!is_in_array(unique_queue_families, unique_queue_family_count,
                    indices.present_family)) {
+    assert(unique_queue_family_count < MAX_QUEUE_FAMILY_COUNT);
     unique_queue_families[unique_queue_family_count++] = indices.present_family;
   }
 
