@@ -35,6 +35,7 @@ struct vulkan_renderer {
   VkRenderPass render_pass;
   VkPipelineLayout pipeline_layout;
   VkPipeline pipeline;
+  VkFramebuffer swapchain_framebuffers[MAX_SWAPCHAIN_IMAGE_COUNT];
   uint32_t swapchain_image_count;
   bool enable_validation_layers;
 };
@@ -829,6 +830,31 @@ bool vulkan_renderer_create_render_pass(struct vulkan_renderer *renderer) {
   return true;
 }
 
+bool vulkan_renderer_create_framebuffers(struct vulkan_renderer *renderer) {
+  for (uint32_t swapchain_image_view_index = 0;
+       swapchain_image_view_index < renderer->swapchain_image_count;
+       swapchain_image_view_index++) {
+    VkImageView attachments[] = {
+        renderer->swapchain_image_views[swapchain_image_view_index]};
+
+    if (vkCreateFramebuffer(
+            renderer->device,
+            &(const VkFramebufferCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .renderPass = renderer->render_pass,
+                .attachmentCount = 1,
+                .pAttachments = attachments,
+                .width = renderer->swapchain_extent.width,
+                .height = renderer->swapchain_extent.height,
+                .layers = 1},
+            NULL,
+            &renderer->swapchain_framebuffers[swapchain_image_view_index]) !=
+        VK_SUCCESS) {
+      return false;
+    }
+  }
+  return true;
+}
 bool vulkan_renderer_init(struct vulkan_renderer *renderer,
                           SDL_Window *window) {
   assert(renderer);
@@ -893,8 +919,15 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer,
     goto destroy_render_pass;
   }
 
+  if (!vulkan_renderer_create_framebuffers(renderer)) {
+    LOG("Couldn't create framebuffers");
+    goto destroy_graphics_pipeline;
+  }
+
   return true;
 
+destroy_graphics_pipeline:
+  vkDestroyPipeline(renderer->device, renderer->pipeline, NULL);
 destroy_render_pass:
   vkDestroyPipelineLayout(renderer->device, renderer->pipeline_layout, NULL);
   vkDestroyRenderPass(renderer->device, renderer->render_pass, NULL);
@@ -923,6 +956,13 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  for (uint32_t framebuffer_index = 0;
+       framebuffer_index < renderer->swapchain_image_count;
+       framebuffer_index++) {
+    vkDestroyFramebuffer(renderer->device,
+                         renderer->swapchain_framebuffers[framebuffer_index],
+                         NULL);
+  }
   vkDestroyPipeline(renderer->device, renderer->pipeline, NULL);
   vkDestroyPipelineLayout(renderer->device, renderer->pipeline_layout, NULL);
   vkDestroyRenderPass(renderer->device, renderer->render_pass, NULL);
