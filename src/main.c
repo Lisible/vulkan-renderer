@@ -32,6 +32,7 @@ struct vulkan_renderer {
   uint32_t swapchain_image_count;
   VkFormat swapchain_image_format;
   VkExtent2D swapchain_extent;
+  VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGE_COUNT];
   bool enable_validation_layers;
 };
 
@@ -579,6 +580,38 @@ bool vulkan_renderer_create_swapchain(struct vulkan_renderer *renderer,
   return true;
 }
 
+bool vulkan_renderer_create_swapchain_image_views(
+    struct vulkan_renderer *renderer) {
+  uint32_t swapchain_image_index = 0;
+  for (; swapchain_image_index < renderer->swapchain_image_count;
+       swapchain_image_index++) {
+    if (vkCreateImageView(
+            renderer->device,
+            &(const VkImageViewCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = renderer->swapchain_images[swapchain_image_index],
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = renderer->swapchain_image_format,
+                .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .levelCount = 1,
+                                     .layerCount = 1}},
+            NULL, &renderer->swapchain_image_views[swapchain_image_index]) !=
+        VK_SUCCESS) {
+      goto err;
+    }
+  }
+
+  return true;
+err:
+  // Destroying the image views that got created
+  for (uint32_t image_view_index = 0; image_view_index < swapchain_image_index;
+       image_view_index++) {
+    vkDestroyImageView(renderer->device,
+                       renderer->swapchain_image_views[image_view_index], NULL);
+  }
+  return false;
+}
+
 bool vulkan_renderer_init(struct vulkan_renderer *renderer,
                           SDL_Window *window) {
   assert(renderer);
@@ -628,8 +661,15 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer,
     goto destroy_logical_device;
   }
 
+  if (!vulkan_renderer_create_swapchain_image_views(renderer)) {
+    LOG("Couldn't create swapchain image views");
+    goto destroy_swapchain;
+  }
+
   return true;
 
+destroy_swapchain:
+  vkDestroySwapchainKHR(renderer->device, renderer->swapchain, NULL);
 destroy_logical_device:
   vkDestroyDevice(renderer->device, NULL);
 destroy_surface:
@@ -645,6 +685,13 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  for (uint32_t swapchain_image_view_index = 0;
+       swapchain_image_view_index < renderer->swapchain_image_count;
+       swapchain_image_view_index++) {
+    vkDestroyImageView(
+        renderer->device,
+        renderer->swapchain_image_views[swapchain_image_view_index], NULL);
+  }
   vkDestroySwapchainKHR(renderer->device, renderer->swapchain, NULL);
   vkDestroyDevice(renderer->device, NULL);
   vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
