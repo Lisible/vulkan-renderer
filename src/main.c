@@ -29,10 +29,12 @@ struct vulkan_renderer {
   VkQueue present_queue;
   VkSwapchainKHR swapchain;
   VkImage swapchain_images[MAX_SWAPCHAIN_IMAGE_COUNT];
-  uint32_t swapchain_image_count;
   VkFormat swapchain_image_format;
   VkExtent2D swapchain_extent;
   VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGE_COUNT];
+  VkRenderPass render_pass;
+  VkPipelineLayout pipeline_layout;
+  uint32_t swapchain_image_count;
   bool enable_validation_layers;
 };
 
@@ -692,8 +694,115 @@ bool vulkan_renderer_create_graphics_pipeline(
   VkPipelineShaderStageCreateInfo shader_stages[] = {
       vertex_shader_stage_info, fragment_shader_stage_info};
 
+  VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                     VK_DYNAMIC_STATE_SCISSOR};
+
+  VkPipelineDynamicStateCreateInfo dynamic_state = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+      .dynamicStateCount = (sizeof(dynamic_states) / sizeof(VkDynamicState)),
+      .pDynamicStates = dynamic_states};
+
+  VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+  };
+
+  VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+      .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+      .primitiveRestartEnable = VK_FALSE};
+
+  VkViewport viewport = {.width = (float)renderer->swapchain_extent.width,
+                         .height = (float)renderer->swapchain_extent.height,
+                         .maxDepth = 1.0f};
+
+  VkRect2D scissor = {.offset = {0}, .extent = renderer->swapchain_extent};
+
+  VkPipelineViewportStateCreateInfo viewport_state = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+      .viewportCount = 1,
+      .scissorCount = 1,
+      .pViewports = &viewport,
+      .pScissors = &scissor};
+
+  VkPipelineRasterizationStateCreateInfo rasterizer = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+      .depthClampEnable = VK_FALSE,
+      .rasterizerDiscardEnable = VK_FALSE,
+      .polygonMode = VK_POLYGON_MODE_FILL,
+      .lineWidth = 1.0f,
+      .cullMode = VK_CULL_MODE_BACK_BIT,
+      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+      .depthBiasEnable = VK_FALSE};
+
+  VkPipelineMultisampleStateCreateInfo multisampling = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+      .sampleShadingEnable = VK_FALSE,
+      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+      .minSampleShading = 1.0f,
+  };
+
+  VkPipelineColorBlendAttachmentState color_blend_attachment = {
+      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+      .blendEnable = VK_FALSE,
+  };
+
+  VkPipelineColorBlendStateCreateInfo color_blending = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+      .logicOpEnable = VK_FALSE,
+      .attachmentCount = 1,
+      .pAttachments = &color_blend_attachment};
+
+  if (vkCreatePipelineLayout(
+          renderer->device,
+          &(const VkPipelineLayoutCreateInfo){
+              .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+          },
+          NULL, &renderer->pipeline_layout) != VK_SUCCESS) {
+    goto destroy_shader_modules;
+  }
+
   vkDestroyShaderModule(renderer->device, vertex_shader_module, NULL);
   vkDestroyShaderModule(renderer->device, fragment_shader_module, NULL);
+  return true;
+destroy_shader_modules:
+  vkDestroyShaderModule(renderer->device, vertex_shader_module, NULL);
+  vkDestroyShaderModule(renderer->device, fragment_shader_module, NULL);
+  return false;
+}
+
+bool vulkan_renderer_create_render_pass(struct vulkan_renderer *renderer) {
+  VkAttachmentDescription color_attachment = {
+      .format = renderer->swapchain_image_format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
+
+  VkAttachmentReference color_attachment_ref = {
+      .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  };
+
+  VkSubpassDescription subpass = {.pipelineBindPoint =
+                                      VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  .colorAttachmentCount = 1,
+                                  .pColorAttachments = &color_attachment_ref};
+
+  if (vkCreateRenderPass(renderer->device,
+                         &(const VkRenderPassCreateInfo){
+                             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                             .attachmentCount = 1,
+                             .pAttachments = &color_attachment,
+                             .subpassCount = 1,
+                             .pSubpasses = &subpass},
+                         NULL, &renderer->render_pass) != VK_SUCCESS) {
+    return false;
+  }
+
   return true;
 }
 
@@ -751,13 +860,21 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer,
     goto destroy_swapchain;
   }
 
+  if (!vulkan_renderer_create_render_pass(renderer)) {
+    LOG("Couldn't create render pass");
+    goto destroy_swapchain_image_views;
+  }
+
   if (!vulkan_renderer_create_graphics_pipeline(renderer)) {
     LOG("Couldn't create graphics pipeline");
-    goto destroy_swapchain_image_views;
+    goto destroy_render_pass;
   }
 
   return true;
 
+destroy_render_pass:
+  vkDestroyPipelineLayout(renderer->device, renderer->pipeline_layout, NULL);
+  vkDestroyRenderPass(renderer->device, renderer->render_pass, NULL);
 destroy_swapchain_image_views:
   for (uint32_t swapchain_image_view_index = 0;
        swapchain_image_view_index < renderer->swapchain_image_count;
@@ -783,6 +900,8 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  vkDestroyPipelineLayout(renderer->device, renderer->pipeline_layout, NULL);
+  vkDestroyRenderPass(renderer->device, renderer->render_pass, NULL);
   for (uint32_t swapchain_image_view_index = 0;
        swapchain_image_view_index < renderer->swapchain_image_count;
        swapchain_image_view_index++) {
