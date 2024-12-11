@@ -612,6 +612,91 @@ err:
   return false;
 }
 
+char *load_shader_from_file(const char *path, size_t *out_size) {
+  FILE *file_handle = fopen(path, "rb");
+  if (!file_handle) {
+    goto err;
+  }
+
+  if (fseek(file_handle, 0, SEEK_END) < 0) {
+    goto close_file;
+  }
+
+  long file_size = ftell(file_handle);
+  if (file_size < 0) {
+    goto close_file;
+  }
+  rewind(file_handle);
+  char *shader_file_content = malloc(file_size);
+  if (fread(shader_file_content, file_size, 1, file_handle) != 1) {
+    goto free_shader_file_content;
+  }
+
+  if (fclose(file_handle) != 0) {
+    goto err;
+  }
+
+  *out_size = file_size;
+  return shader_file_content;
+free_shader_file_content:
+  free(shader_file_content);
+close_file:
+  fclose(file_handle);
+err:
+  return NULL;
+}
+
+VkShaderModule create_shader_module(VkDevice device, char *code,
+                                    size_t code_size) {
+  VkShaderModule shader_module;
+  if (vkCreateShaderModule(
+          device,
+          &(const VkShaderModuleCreateInfo){
+              .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+              .codeSize = code_size,
+              .pCode = (const uint32_t *)code,
+          },
+          NULL, &shader_module) != VK_SUCCESS) {
+    return NULL;
+  }
+
+  return shader_module;
+}
+
+bool vulkan_renderer_create_graphics_pipeline(
+    struct vulkan_renderer *renderer) {
+  size_t vertex_shader_code_size;
+  char *vertex_shader_code = load_shader_from_file("shaders/triangle.vert.spv",
+                                                   &vertex_shader_code_size);
+  size_t fragment_shader_code_size;
+  char *fragment_shader_code = load_shader_from_file(
+      "shaders/triangle.frag.spv", &fragment_shader_code_size);
+  VkShaderModule vertex_shader_module = create_shader_module(
+      renderer->device, vertex_shader_code, vertex_shader_code_size);
+  VkShaderModule fragment_shader_module = create_shader_module(
+      renderer->device, fragment_shader_code, fragment_shader_code_size);
+  free(vertex_shader_code);
+  free(fragment_shader_code);
+
+  VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+      .stage = VK_SHADER_STAGE_VERTEX_BIT,
+      .module = vertex_shader_module,
+      .pName = "main"};
+  VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+      .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+      .module = fragment_shader_module,
+      .pName = "main"};
+
+  VkPipelineShaderStageCreateInfo shader_stages[] = {
+      vertex_shader_stage_info, fragment_shader_stage_info};
+
+  vkDestroyShaderModule(renderer->device, vertex_shader_module, NULL);
+  vkDestroyShaderModule(renderer->device, fragment_shader_module, NULL);
+  return true;
+}
+
 bool vulkan_renderer_init(struct vulkan_renderer *renderer,
                           SDL_Window *window) {
   assert(renderer);
@@ -666,8 +751,21 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer,
     goto destroy_swapchain;
   }
 
+  if (!vulkan_renderer_create_graphics_pipeline(renderer)) {
+    LOG("Couldn't create graphics pipeline");
+    goto destroy_swapchain_image_views;
+  }
+
   return true;
 
+destroy_swapchain_image_views:
+  for (uint32_t swapchain_image_view_index = 0;
+       swapchain_image_view_index < renderer->swapchain_image_count;
+       swapchain_image_view_index++) {
+    vkDestroyImageView(
+        renderer->device,
+        renderer->swapchain_image_views[swapchain_image_view_index], NULL);
+  }
 destroy_swapchain:
   vkDestroySwapchainKHR(renderer->device, renderer->swapchain, NULL);
 destroy_logical_device:
