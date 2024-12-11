@@ -17,6 +17,8 @@
   } while (0)
 #endif
 
+#define MAX_SWAPCHAIN_IMAGE_COUNT 32
+
 struct vulkan_renderer {
   VkInstance instance;
   VkPhysicalDevice physical_device;
@@ -26,6 +28,10 @@ struct vulkan_renderer {
   VkSurfaceKHR surface;
   VkQueue present_queue;
   VkSwapchainKHR swapchain;
+  VkImage swapchain_images[MAX_SWAPCHAIN_IMAGE_COUNT];
+  uint32_t swapchain_image_count;
+  VkFormat swapchain_image_format;
+  VkExtent2D swapchain_extent;
   bool enable_validation_layers;
 };
 
@@ -561,6 +567,15 @@ bool vulkan_renderer_create_swapchain(struct vulkan_renderer *renderer,
     return false;
   }
 
+  uint32_t actual_image_count;
+  vkGetSwapchainImagesKHR(renderer->device, renderer->swapchain,
+                          &actual_image_count, NULL);
+  assert(actual_image_count <= MAX_SWAPCHAIN_IMAGE_COUNT);
+  renderer->swapchain_image_count = actual_image_count;
+  vkGetSwapchainImagesKHR(renderer->device, renderer->swapchain,
+                          &actual_image_count, renderer->swapchain_images);
+  renderer->swapchain_image_format = surface_format.format;
+  renderer->swapchain_extent = extent;
   return true;
 }
 
