@@ -34,6 +34,7 @@ struct vulkan_renderer {
   VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGE_COUNT];
   VkRenderPass render_pass;
   VkPipelineLayout pipeline_layout;
+  VkPipeline pipeline;
   uint32_t swapchain_image_count;
   bool enable_validation_layers;
 };
@@ -762,6 +763,28 @@ bool vulkan_renderer_create_graphics_pipeline(
     goto destroy_shader_modules;
   }
 
+  if (vkCreateGraphicsPipelines(
+          renderer->device, VK_NULL_HANDLE, 1,
+          &(const VkGraphicsPipelineCreateInfo){
+              .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+              .stageCount = 2,
+              .pStages = shader_stages,
+              .pVertexInputState = &vertex_input_info,
+              .pInputAssemblyState = &input_assembly,
+              .pViewportState = &viewport_state,
+              .pRasterizationState = &rasterizer,
+              .pMultisampleState = &multisampling,
+              .pColorBlendState = &color_blending,
+              .pDynamicState = &dynamic_state,
+              .layout = renderer->pipeline_layout,
+              .renderPass = renderer->render_pass,
+              .subpass = 0,
+
+          },
+          NULL, &renderer->pipeline) != VK_SUCCESS) {
+    goto destroy_shader_modules;
+  }
+
   vkDestroyShaderModule(renderer->device, vertex_shader_module, NULL);
   vkDestroyShaderModule(renderer->device, fragment_shader_module, NULL);
   return true;
@@ -900,6 +923,7 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  vkDestroyPipeline(renderer->device, renderer->pipeline, NULL);
   vkDestroyPipelineLayout(renderer->device, renderer->pipeline_layout, NULL);
   vkDestroyRenderPass(renderer->device, renderer->render_pass, NULL);
   for (uint32_t swapchain_image_view_index = 0;
