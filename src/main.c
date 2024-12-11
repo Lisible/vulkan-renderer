@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
@@ -24,6 +25,7 @@ struct vulkan_renderer {
   VkDebugUtilsMessengerEXT debug_messenger;
   VkSurfaceKHR surface;
   VkQueue present_queue;
+  VkSwapchainKHR swapchain;
   bool enable_validation_layers;
 };
 
@@ -253,14 +255,104 @@ struct queue_family_indices find_queue_families(VkPhysicalDevice device,
   return indices;
 }
 
-bool is_device_suitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
+bool extension_with_name_is_in_array(VkExtensionProperties *array,
+                                     uint32_t length,
+                                     const char *extension_name) {
+  for (uint32_t index = 0; index < length; index++) {
+    if (strcmp(array[index].extensionName, extension_name) == 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool device_supports_requested_extensions(VkPhysicalDevice device,
+                                          const char **required_extensions,
+                                          uint32_t required_extension_count) {
+  uint32_t supported_extension_count;
+  vkEnumerateDeviceExtensionProperties(device, NULL, &supported_extension_count,
+                                       NULL);
+
+  VkExtensionProperties supported_extensions[MAX_EXTENSION_COUNT] = {0};
+  vkEnumerateDeviceExtensionProperties(device, NULL, &supported_extension_count,
+                                       supported_extensions);
+  for (uint32_t required_extension_index = 0;
+       required_extension_index < required_extension_count;
+       required_extension_index++) {
+    if (!extension_with_name_is_in_array(
+            supported_extensions, supported_extension_count,
+            required_extensions[required_extension_index])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+#define MAX_SWAPCHAIN_SURFACE_FORMAT_COUNT 10
+#define MAX_SWAPCHAIN_SURFACE_PRESENT_MODE_COUNT 10
+
+struct swapchain_support_details {
+  VkSurfaceCapabilitiesKHR capabilities;
+  VkSurfaceFormatKHR formats[MAX_SWAPCHAIN_SURFACE_FORMAT_COUNT];
+  VkPresentModeKHR present_modes[MAX_SWAPCHAIN_SURFACE_PRESENT_MODE_COUNT];
+  uint32_t format_count;
+  uint32_t present_mode_count;
+};
+struct swapchain_support_details
+query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface) {
+  struct swapchain_support_details details;
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
+                                            &details.capabilities);
+
+  vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count,
+                                       NULL);
+  if (details.format_count != 0) {
+    assert(details.format_count < MAX_SWAPCHAIN_SURFACE_FORMAT_COUNT);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count,
+                                         details.formats);
+  }
+
+  vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface,
+                                            &details.present_mode_count, NULL);
+  if (details.present_mode_count != 0) {
+    assert(details.present_mode_count <
+           MAX_SWAPCHAIN_SURFACE_PRESENT_MODE_COUNT);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(
+        device, surface, &details.present_mode_count, details.present_modes);
+  }
+
+  return details;
+}
+
+bool is_device_suitable(VkPhysicalDevice device, VkSurfaceKHR surface,
+                        const char **required_extensions,
+                        uint32_t required_extension_count) {
   struct queue_family_indices queue_family_indices =
       find_queue_families(device, surface);
 
-  return queue_family_indices_is_complete(&queue_family_indices);
+  bool extensions_supported = device_supports_requested_extensions(
+      device, required_extensions, required_extension_count);
+
+  bool swapchain_adequate = false;
+  if (extensions_supported) {
+    struct swapchain_support_details swapchain_support_details =
+        query_swapchain_support(device, surface);
+    swapchain_adequate = swapchain_support_details.format_count != 0 &&
+                         swapchain_support_details.present_mode_count != 0;
+  }
+
+  return queue_family_indices_is_complete(&queue_family_indices) &&
+         extensions_supported && swapchain_adequate;
 }
 
+static const char *required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+static uint32_t required_extension_count =
+    sizeof(required_extensions) / sizeof(const char *);
+
 bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
+
   VkPhysicalDevice physical_device = VK_NULL_HANDLE;
   uint32_t device_count = 0;
   vkEnumeratePhysicalDevices(renderer->instance, &device_count, NULL);
@@ -274,7 +366,8 @@ bool vulkan_renderer_pick_physical_device(struct vulkan_renderer *renderer) {
   vkEnumeratePhysicalDevices(renderer->instance, &device_count, devices);
 
   for (uint32_t device_index = 0; device_index < device_count; device_index++) {
-    if (is_device_suitable(devices[device_index], renderer->surface)) {
+    if (is_device_suitable(devices[device_index], renderer->surface,
+                           required_extensions, required_extension_count)) {
       physical_device = devices[device_index];
       break;
     }
@@ -305,7 +398,6 @@ bool is_in_array(uint32_t *array, int length, uint32_t value) {
 bool vulkan_renderer_create_logical_device(struct vulkan_renderer *renderer) {
   struct queue_family_indices indices =
       find_queue_families(renderer->physical_device, renderer->surface);
-
   VkDeviceQueueCreateInfo queue_create_infos[MAX_QUEUE_FAMILY_COUNT] = {0};
   int queue_create_info_count = 0;
 
@@ -343,7 +435,8 @@ bool vulkan_renderer_create_logical_device(struct vulkan_renderer *renderer) {
                          .pQueueCreateInfos = queue_create_infos,
                          .queueCreateInfoCount = queue_create_info_count,
                          .pEnabledFeatures = &device_features,
-                         .enabledExtensionCount = 0,
+                         .ppEnabledExtensionNames = required_extensions,
+                         .enabledExtensionCount = required_extension_count,
                          // TODO maybe add the validation layers
                          // Not required according to vulkan-tutorial, but might
                          // be good for compatibility
@@ -359,6 +452,114 @@ bool vulkan_renderer_create_logical_device(struct vulkan_renderer *renderer) {
                    &renderer->present_queue);
   LOG("graphics_queue: %p", (void *)renderer->graphics_queue);
   LOG("present_queue: %p", (void *)renderer->present_queue);
+
+  return true;
+}
+
+VkSurfaceFormatKHR
+choose_swapchain_surface_format(VkSurfaceFormatKHR *available_formats,
+                                uint32_t available_format_count) {
+  for (uint32_t available_format_index = 0;
+       available_format_index < available_format_count;
+       available_format_index++) {
+    VkSurfaceFormatKHR available_format =
+        available_formats[available_format_index];
+    if (available_format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+        available_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+      return available_format;
+    }
+  }
+
+  return available_formats[0];
+}
+
+VkPresentModeKHR
+choose_swapchain_present_mode(VkPresentModeKHR *available_present_modes,
+                              uint32_t available_present_mode_count) {
+  for (uint32_t available_present_mode_index = 0;
+       available_present_mode_index < available_present_mode_count;
+       available_present_mode_index++) {
+    VkPresentModeKHR present_mode =
+        available_present_modes[available_present_mode_index];
+    if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+      return present_mode;
+    }
+  }
+  return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+uint32_t clamp_uint32(uint32_t min, uint32_t max, uint32_t value) {
+  return value < min ? min : value > max ? max : value;
+}
+
+VkExtent2D choose_swapchain_extent(const VkSurfaceCapabilitiesKHR *capabilities,
+                                   int width, int height) {
+  if (capabilities->currentExtent.width != UINT32_MAX) {
+    return capabilities->currentExtent;
+  } else {
+    VkExtent2D actual_extent = {width, height};
+    actual_extent.width =
+        clamp_uint32(capabilities->minImageExtent.width,
+                     capabilities->maxImageExtent.width, actual_extent.width);
+    actual_extent.height =
+        clamp_uint32(capabilities->minImageExtent.height,
+                     capabilities->maxImageExtent.height, actual_extent.height);
+    return actual_extent;
+  }
+}
+
+bool vulkan_renderer_create_swapchain(struct vulkan_renderer *renderer,
+                                      int window_width_px,
+                                      int window_height_px) {
+  struct swapchain_support_details swapchain_support =
+      query_swapchain_support(renderer->physical_device, renderer->surface);
+
+  VkSurfaceFormatKHR surface_format = choose_swapchain_surface_format(
+      swapchain_support.formats, swapchain_support.format_count);
+  VkPresentModeKHR present_mode = choose_swapchain_present_mode(
+      swapchain_support.present_modes, swapchain_support.present_mode_count);
+  VkExtent2D extent = choose_swapchain_extent(
+      &swapchain_support.capabilities, window_width_px, window_height_px);
+  uint32_t image_count = swapchain_support.capabilities.minImageCount + 1;
+  if (swapchain_support.capabilities.maxImageCount > 0 &&
+      image_count > swapchain_support.capabilities.maxImageCount) {
+    image_count = swapchain_support.capabilities.maxImageCount;
+  }
+
+  VkSwapchainCreateInfoKHR create_info = {0};
+  create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+  create_info.surface = renderer->surface;
+  create_info.minImageCount = image_count;
+  create_info.imageFormat = surface_format.format;
+  create_info.imageColorSpace = surface_format.colorSpace;
+  create_info.imageExtent = extent;
+  create_info.imageArrayLayers = 1;
+  create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+  struct queue_family_indices indices =
+      find_queue_families(renderer->physical_device, renderer->surface);
+  uint32_t queue_family_indices[] = {indices.graphics_family,
+                                     indices.present_family};
+
+  if (indices.graphics_family != indices.present_family) {
+    create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+    create_info.queueFamilyIndexCount = 2;
+    create_info.pQueueFamilyIndices = queue_family_indices;
+  } else {
+    create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
+
+  create_info.preTransform = swapchain_support.capabilities.currentTransform;
+  create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  create_info.presentMode = present_mode;
+  create_info.clipped = VK_TRUE;
+  create_info.oldSwapchain = VK_NULL_HANDLE;
+
+  if (vkCreateSwapchainKHR(renderer->device, &create_info, NULL,
+                           &renderer->swapchain) != VK_SUCCESS) {
+    LOG("Couldn't create swapchain");
+    return false;
+  }
 
   return true;
 }
@@ -399,8 +600,23 @@ bool vulkan_renderer_init(struct vulkan_renderer *renderer,
     goto destroy_surface;
   }
 
+  int window_width_px;
+  int window_height_px;
+  if (!SDL_GetWindowSizeInPixels(window, &window_width_px, &window_height_px)) {
+    LOG("Couldn't get window size");
+    goto destroy_surface;
+  }
+
+  if (!vulkan_renderer_create_swapchain(renderer, window_width_px,
+                                        window_height_px)) {
+    LOG("Couldn't create swapchain");
+    goto destroy_logical_device;
+  }
+
   return true;
 
+destroy_logical_device:
+  vkDestroyDevice(renderer->device, NULL);
 destroy_surface:
   vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
 destroy_instance:
@@ -414,6 +630,7 @@ err:
 }
 
 void vulkan_renderer_deinit(struct vulkan_renderer *renderer) {
+  vkDestroySwapchainKHR(renderer->device, renderer->swapchain, NULL);
   vkDestroyDevice(renderer->device, NULL);
   vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
   if (renderer->enable_validation_layers) {
