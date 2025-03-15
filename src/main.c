@@ -64,7 +64,7 @@ bool vulkan_renderer_create_instance(struct vulkan_renderer *renderer) {
       .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
       .pEngineName = "None",
       .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-      .apiVersion = VK_API_VERSION_1_0};
+      .apiVersion = VK_API_VERSION_1_2};
 
   const char *requested_extensions[MAX_EXTENSION_COUNT] = {0};
   uint32_t requested_extension_count = 0;
@@ -153,7 +153,8 @@ bool vulkan_renderer_create_instance(struct vulkan_renderer *renderer) {
       .enabledExtensionCount = requested_extension_count,
       .ppEnabledExtensionNames = requested_extensions,
       .enabledLayerCount = enabled_layer_count,
-      .ppEnabledLayerNames = enabled_layers};
+      .ppEnabledLayerNames = enabled_layers,
+      .flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR};
   if (renderer->enable_validation_layers) {
     instance_create_info.pNext =
         (VkDebugUtilsMessengerCreateInfoEXT *)&debug_create_info;
@@ -301,8 +302,8 @@ bool device_supports_requested_extensions(VkPhysicalDevice device,
   return true;
 }
 
-#define MAX_SWAPCHAIN_SURFACE_FORMAT_COUNT 10
-#define MAX_SWAPCHAIN_SURFACE_PRESENT_MODE_COUNT 10
+#define MAX_SWAPCHAIN_SURFACE_FORMAT_COUNT 64
+#define MAX_SWAPCHAIN_SURFACE_PRESENT_MODE_COUNT 64
 
 struct swapchain_support_details {
   VkSurfaceCapabilitiesKHR capabilities;
@@ -358,7 +359,8 @@ bool is_device_suitable(VkPhysicalDevice device, VkSurfaceKHR surface,
          extensions_supported && swapchain_adequate;
 }
 
-static const char *required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+static const char *required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                            "VK_KHR_portability_subset"};
 static uint32_t required_extension_count =
     sizeof(required_extensions) / sizeof(const char *);
 
